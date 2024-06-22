@@ -296,6 +296,7 @@ class Footer extends BaseView {
   $buttonImport
   $textImportText
   $textStorageData
+  $buttonClearAllData
 
   constructor() {
     super();
@@ -320,6 +321,17 @@ class Footer extends BaseView {
     on(this.$buttonImport, "click", () => {
       const text = this.$textImportText.value;
       importTabs(text);
+    });
+
+    on(this.$buttonClearAllData, "click", () => {
+      if (confirm("Clear all data?")) {
+        setTimeout(async() => {
+          if (confirm("Really?")) {
+            await chrome.storage.local.clear();
+            window.location.reload();
+          }
+        }, 1000);
+      }
     });
   }
 }
@@ -476,6 +488,15 @@ async function importTabs(importText) {
   // まずJSONとして処理する。
   try {
     var items = JSON.parse(importText);
+
+    // 配列でない場合は、localStorageの形式とみなす。
+    var isArray = Array.isArray(items);
+    if (!isArray) {
+      items = Object.entries(items)
+        .map(([key, value]) => value.items)
+        .filter(items => items != null && items.length !== 0);
+    }
+
     // tab[][]の場合と、tab[]の場合があるのでtab[]の場合はtab[][]にする。
     if (items[0][0] == null) {
       items = [items];
@@ -493,6 +514,7 @@ async function importTabs(importText) {
     return;
   } catch (error) {
     tmpError = error;
+    console.error(error);
   }
 
   // だめならテキスト形式で処理する。
@@ -516,6 +538,8 @@ async function importTabs(importText) {
         var [url, ...rest] = line.split(" | ");
         var title = rest.join(" | ");
         if (title === "") title = url;
+        // URLとして正しいかチェックする。
+        const _ = new URL(url);
         return {title, url}
       });
       console.log(items);
