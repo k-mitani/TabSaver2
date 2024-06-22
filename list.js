@@ -1,269 +1,442 @@
-console.log("start.")
+function on($el, eventName, method) {
+  $el.addEventListener(eventName, method);
+}
 
-Vue.component("app-saved-tab", {
-  props: {
-    group: Object,
-    tab: Object,
-  },
-  computed: {
-    faviconUrl: function() {
-      return "https://www.google.com/s2/favicons?domain=" + new URL(this.tab.url).host;
-    },
-  },
-  template: `
-  <div>
-    <button
-      class="app-saved-tab--button "
-      :style="{ visibility: tab.deleted ? 'hidden' : 'visible' }"
-      @click="$emit('click-delete', {group, tab, $event})">❌</button>
-    <a
-      target="_blank"
-      :href="tab.url"
-      :style="{ 'text-decoration': tab.deleted ? 'line-through' : 'none' }"
-      @click="$emit('click-link', {group, tab, $event})"
-      >
-      <img :src="faviconUrl" style="width: 16px; height: 16px;">
+
+function wireupTemplate(obj, templateId) {
+  const template = document.getElementById(templateId);
+  const clone = template.content.cloneNode(true);
+  for (const name of Object.keys(obj)) {
+    if (name.startsWith("$")) {
+      const query = name.replace("$", ".");
+      obj[name] = clone.querySelector(query);
+      if (obj[name] == null) {
+        console.error(`Element not found: ${query}`);
+      }
+    }
+  }
+  return clone;
+}
+
+
+class MyTabGroupElement extends HTMLElement {
+  $labelSavedAt
+  $labelTabCount
+  $buttonOpenAll
+  $buttonDeleteAll
+  $buttonCopyAsText
+  $buttonCopyAsJson
+  $listTabs
+  group
+  tabs = []
+
+  constructor() {
+      super();
+      const node = wireupTemplate(this, "templateTabGroup");
       
-      {{tab.title}}</a>
-  </div>
-  `,
-});
+      // 全てのタブを開く。
+      on(this.$buttonOpenAll, "click", async ev => {
+        const shouldDelete = !ev.getModifierState("Control");
+        var promises = [];
+        for (const tab of this.tabs.filter(t => t.canShow())) {
+          promises.push(tab.open(shouldDelete));
+        }
+        await Promise.all(promises);
+        this.refresh();
+        window.view.updateTotalCount();
+      });
+
+      // 全てのタブを削除する。
+      on(this.$buttonDeleteAll, "click", () => {
+        this.tabs.filter(t => !t.tab.deleted).forEach(t => {
+          t.delete();
+        });
+        this.refresh();
+        window.view.updateTotalCount();
+      });
+      
+      // テキスト形式でコピーする。
+      on(this.$buttonCopyAsText, "click", () => {
+        const text = this.toText();
+        copyTextToClipboard(text);
+      });
+      
+      // JSON形式でコピーする。
+      on(this.$buttonCopyAsJson, "click", () => {
+        const json = this.toJSON();
+        copyTextToClipboard(json);
+      });
+
+      const shadow = this.attachShadow({mode: "open"});
+      shadow.appendChild(node);
+  }
+
+  setData(group) {
+    this.group = group;
+    this.$labelSavedAt.textContent = group.savedAt.toLocaleString();
+    this.$listTabs.innerHTML = "";
+    group.tabs.forEach(tab => {
+      const $tab = new MyTabElement();
+      $tab.setData(tab, this);
+      this.$listTabs.appendChild($tab);
+      this.tabs.push($tab);
+    });
+    this.style.display = this.hasAnyVisibleTab() ? "" : "none";
+    this.updateTotalCount();
+  }
+
+  refresh() {
+    this.style.display = this.hasAnyVisibleTab() ? "" : "none";
+    for (const tab of this.tabs) {
+      tab.refresh();
+    }
+    this.updateTotalCount();
+  }
+
+  updateTotalCount() {
+    let count = 0;
+    for (const tab of this.tabs) {
+      if (tab.canShow()) {
+        count++;
+      }
+    }
+    this.$labelTabCount.textContent = count;
+  }
+
+  hasAnyVisibleTab() {
+    return this.tabs.some(tab => tab.canShow());
+  }
+
+  toText() {
+    let text = "";
+    this.tabs
+      .filter(tab => tab.canShow())
+      .forEach(tab => {
+        const deletedText = tab.tab.deleted ? "(Deleted) " : "";
+        text += `${deletedText}${tab.tab.url} | ${tab.tab.title.replace("\n", "")}\n`;
+      });
+    return text;
+  }
+
+  toJSON() {
+    var items = this.tabs
+      .filter(tab => tab.canShow())
+      .map(tab => {
+        return JSON.stringify(tab.tab);
+      });
+    var json = `[\n ${items.join("\n,")}\n]`;
+    return json;
+  }
+}
+window.customElements.define("my-tab-group", MyTabGroupElement);
 
 
-var app = new Vue({
-  el: "#app",
-  data: {
-    startupMessage: "Initializing...",
-    isStarting: true,
-    showDeletedTab: false,
-    showUndeletedTab: true,
-    errorText: null,
-    latestKey: null,
-    saveItems: [],
-    importText: "",
-    storageData: "",
-  },
-  computed: {
-    totalCount: function() {
-      return this.saveItems.reduce((acc, item) => acc + this.countTabsOfGroup(item), 0);
-    },
-  },
-  methods: {
-    countTabsOfGroup(group) {
-      return group.tabs.filter(tab => this.canShowTab(tab)).length;
-    },
-    canShowGroup: function(group) {
-      return group.tabs.some(tab => this.canShowTab(tab));
-    },
-    canShowTab: function(tab) {
-      return (
-        (this.showDeletedTab && tab.deleted) ||
-        (this.showUndeletedTab && !tab.deleted));
-    },
+class MyTabElement extends HTMLElement {
+  $buttonDeleteTab
+  $linkTab
+  $imgFavicon
+  $labelTabTitle
+  tab
 
-    onClickClearDeletedTab: function() {
+  constructor(){
+      super();
+      const node = wireupTemplate(this, "templateTab");
+      
+      on(this.$buttonDeleteTab, "click", () => {
+        this.delete();
+        this.$group.refresh();
+        window.view.updateTotalCount();
+      });
+
+      on(this.$linkTab, "click", async ev => {
+        ev.preventDefault();
+        // CTRLキーが押されていないならなら一覧から削除する。
+        const shouldDelete = !ev.getModifierState("Control");
+        await this.open(shouldDelete);
+
+        this.$group.refresh();
+        window.view.updateTotalCount();
+      });
+
+      const shadow = this.attachShadow({mode: "open"});
+      shadow.appendChild(node);
+  }
+
+  async open(shouldDelete) {
+    chrome.tabs.create({url: this.tab.url, active: false});
+    if (shouldDelete) {
+      this.tab.deleted = true;
+      const group = this.$group.group;
+      
+      var data = {};
+      data[group.key] = {items: group.tabs};
+      await chrome.storage.local.set(data);
+      console.log("done:", JSON.stringify(group));
+    }
+  }
+
+  async delete() {
+    this.tab.deleted = true;
+    var data = {};
+    var group = this.$group.group;
+    data[group.key] = {items: group.tabs};
+    await chrome.storage.local.set(data);
+    console.log("done:", JSON.stringify(group));
+  }
+
+  setData(tab, $group) {
+    this.tab = tab;
+    this.$group = $group;
+    this.$linkTab.href = tab.url;
+    this.$imgFavicon.src = "https://www.google.com/s2/favicons?domain=" + new URL(tab.url).host;
+    this.$labelTabTitle.textContent = tab.title;
+    this.refresh();
+  }
+
+  canShow() {
+    return (
+      (window.view.showDeletedTab && this.tab.deleted) ||
+      (window.view.showUndeletedTab && !this.tab.deleted)
+    );
+  }
+
+  refresh() {
+    this.style.display = this.canShow() ? "" : "none";
+    this.$buttonDeleteTab.style.visibility = this.tab.deleted ? "hidden" : "visible";
+    this.$linkTab.style.textDecoration = this.tab.deleted ? "line-through" : "";
+  }
+}
+window.customElements.define("my-tab", MyTabElement);
+
+
+class BaseView {
+  getElementsAutomatically() {
+    for (const name of Object.keys(this)) {
+      if (name.startsWith("$")) {
+        this[name] = document.getElementById(name.substring(1));
+        if (this[name] == null) {
+          console.error(`Element not found: ${name}`);
+        }
+      }
+    }
+  }
+}
+
+
+class Header extends BaseView {
+  $labelTotalCount
+  $checkShowUndeletedTab
+  $checkShowDeletedTab
+  $buttonClearDeletedTab
+  $labelStartupMessage
+  $saveItemContainer
+
+  constructor() {
+    super();
+    this.getElementsAutomatically();
+    
+    on(this.$checkShowUndeletedTab, "change", () => {
+      window.view.onFilterChanged();
+    });
+
+    on(this.$checkShowDeletedTab, "change", () => {
+      window.view.onFilterChanged();
+    });
+
+    on(this.$buttonClearDeletedTab, "click", async () => {
       // 削除済みしかないグループを消す。
-      this.saveItems.filter(item => item.tabs.every(x => x.deleted)).forEach(item => {
+      var allGroups = window.view.$tabGroups;
+      allGroups.filter(g => g.tabs.every(t => t.tab.deleted)).forEach(g => {
+        const group = g.group;
         // 最新キーなら最新キーも消す。
-        if (item.key === this.latestKey) {
+        if (group.key === core.latestKey) {
           chrome.storage.local.remove("latest-key");
         }
-        chrome.storage.local.remove(item.key);
-        this.saveItems.splice(this.saveItems.indexOf(item), 1);
+        chrome.storage.local.remove(group.key);
+        window.view.$tabGroups.splice(window.view.$tabGroups.indexOf(g), 1);
+        g.remove();
       });
+
       // 個別のタブを消す。
-      this.saveItems.forEach(item => {
-        item.tabs.filter(tab => tab.deleted).forEach(tab => {
-          item.tabs.splice(item.tabs.indexOf(tab), 1);
+      for (const g of window.view.$tabGroups) {
+        const group = g.group;
+        g.tabs.filter(t => t.tab.deleted).forEach(t => {
+          group.tabs.splice(group.tabs.indexOf(t.tab), 1);
+          g.tabs.splice(g.tabs.indexOf(t), 1);
+          t.remove();
         });
 
         var data = {};
-        data[item.key] = {items: item.tabs};
-        chrome.storage.local.set(data, (res) => {
-          console.log("done:", JSON.stringify(item));
-        });
-      });
-    },
-    onClickOpenAll: function(item, $event) {
-      item.tabs.filter(t => !t.deleted).forEach(tab => {
-        this.onClickLink({group: item, tab, $event});
-      });
-    },
-    onClickDeleteAll: function(item, $event) {
-      item.tabs.filter(t => !t.deleted).forEach(tab => {
-        this.onClickDelete({group: item, tab, $event});
-      });
-    },
-    onClickCopyAsText: function(item, $event) {
-      var text = "";
-      item.tabs.filter(t => !t.deleted).forEach(tab => {
-        text += `${tab.url} | ${tab.title.replace("\n", "")}\n`;
-      });
+        data[group.key] = {items: group.tabs};
+        await chrome.storage.local.set(data);
+        console.log("done:", JSON.stringify(group));
+      }
+
+      window.view.onFilterChanged();
+      window.view.updateTotalCount();
+    });
+  }
+}
+
+
+class SaveItemContainer extends BaseView {
+  $saveItemContainer
+
+  constructor() {
+    super();
+    this.getElementsAutomatically();
+  }
+}
+
+
+class Footer extends BaseView {
+  $buttonCopyAllAsText
+  $buttonCopyAllAsJson
+  $labelErrorText
+  $buttonImport
+  $textImportText
+  $textStorageData
+
+  constructor() {
+    super();
+    this.getElementsAutomatically();
+    
+    on(this.$buttonCopyAllAsText, "click", () => {
+      const texts = window.view.$tabGroups
+        .filter(g => g.hasAnyVisibleTab())
+        .map(g => g.toText());
+      const text = texts.join("\n");
       copyTextToClipboard(text);
-    },
-    onClickCopyAsJson: function(item, $event) {
-      var items = item.tabs.filter(t => !t.deleted).map(tab => {
-        return JSON.stringify(tab);
-      });
-      var json = `[\n ${items.join("\n,")}\n]`;
+    });
+
+    on(this.$buttonCopyAllAsJson, "click", () => {
+      const jsons = window.view.$tabGroups
+        .filter(g => g.tabs.some(tab => tab.canShow()))
+        .map(g => g.toJSON());
+      const json = `[${jsons.join(",")}]`;
       copyTextToClipboard(json);
-    },
+    });
 
-    onClickCopyAllAsText: function($event) {
-      var text = "";
-      this.saveItems.filter(x => x.tabs.some(tab => !tab.deleted)).forEach(item => {
-        item.tabs.filter(t => !t.deleted).forEach(tab => {
-          text += `${tab.url} | ${tab.title.replace("\n", "")}\n`;
-        });
-        text += "\n";
-      });
-      copyTextToClipboard(text);
-    },
-    onClickCopyAllAsJson: function($event) {
-      var items = this.saveItems.filter(x => x.tabs.some(tab => !tab.deleted)).map(item => {
-        var items = item.tabs.filter(t => !t.deleted).map(tab => {
-          return JSON.stringify(tab);
-        });
-        return `[\n ${items.join("\n,")}\n]`;
-      });
-
-      var json = `[${items.join(",")}]`;
-      copyTextToClipboard(json);
-    },
-    onClickImport: function($event) {
-      if (this.importText == null || this.importText.match(/^ *$/) != null) {
-        this.errorText = "入力が空です。"
-        return;
-      }
-      this.errorText = null;
-
-      var tmpError = null;
-      // まずJSONとして処理する。
-      try {
-        var items = JSON.parse(app.importText);
-        // tab[][]の場合と、tab[]の場合があるのでtab[]の場合はtab[][]にする。
-        if (items[0][0] == null) {
-          items = [items];
-        }
-
-        var time = Date.now();
-        var saveItems = items.map((item, i) => ({key: "SaveItem-" + (time - i), items: item}));
-        var data = {};
-        saveItems.forEach(item => {
-          data[item.key] = item;
-        });
-        data["latest-key"] = saveItems[0].key;
-        chrome.storage.local.set(data, res => {
-          window.location.reload();
-        });
-        return;
-      } catch (error) {
-        tmpError = error;
-      }
-
-      // だめならテキスト形式で処理する。
-      try {
-        var items = app.importText.split("\n");
-        var groups = items.reduce((acc, line) => {
-          // 空行が来たら次のグループを作る。
-          if (line === "") {
-            acc[acc.length] = [];
-          }
-            // 普通の行なら末尾のグループに追加する。
-          else {
-            acc[acc.length - 1].push(line);
-          }
-          return acc;
-        }, [[]]).filter(group => group.length !== 0);
-
-        var time = Date.now();
-        var saveItems = groups.map((lines, i) => {
-          var items = lines.map(line => {
-            var [url, ...rest] = line.split(" | ");
-            var title = rest.join(" | ");
-            if (title === "") title = url;
-            return {title, url}
-          });
-          console.log(items);
-          return {key: "SaveItem-" + (time - i), items};
-        });
-
-        var data = {};
-        saveItems.forEach(item => {
-          data[item.key] = item;
-        });
-        data["latest-key"] = saveItems[0].key;
-        chrome.storage.local.set(data, res => {
-          window.location.reload();
-        });
-        return;
-      }
-      catch (error) {
-        this.errorText = error.stack + "\n\n\n" + tmpError.stack;
-      }
-    },
+    on(this.$buttonImport, "click", () => {
+      const text = this.$textImportText.value;
+      importTabs(text);
+    });
+  }
+}
 
 
-    // リンクをクリックされた場合に呼ばれます。
-    onClickLink: function(ev) {
-      chrome.tabs.create({url: ev.tab.url, active: false});
-      
-      // CTRLキーが押されていないならなら一覧から削除する。
-      if (!ev.$event.getModifierState("Control")) {
-        // ev.group.tabs.splice(ev.group.tabs.indexOf(ev.tab), 1);
-        ev.tab.deleted = true;
-        
-        var data = {};
-        data[ev.group.key] = {items: ev.group.tabs};
-        chrome.storage.local.set(data, (res) => {
-          console.log("done:", JSON.stringify(ev.group));
-        });
-      }
-      ev.$event.preventDefault();
-    },
-    // 削除ボタンをクリックされた場合に呼ばれます。
-    onClickDelete: function(ev) {
-      // ev.group.tabs.splice(ev.group.tabs.indexOf(ev.tab), 1);
-      ev.tab.deleted = true;
-      var data = {};
-      data[ev.group.key] = {items: ev.group.tabs};
-      chrome.storage.local.set(data, (res) => {
-        console.log("done:", JSON.stringify(ev.group));
-      });
-    },
-  },
-});
+class MainView {
+  $tabGroups = [];
+  showUndeletedTab = true;
+  showDeletedTab = false;
 
-chrome.storage.local.get((res) => {
-  app.startupMessage = "Parsing Storage Data...";
-  app.storageData = JSON.stringify(res);
-  var saveItems = Object.entries(res)
-    .filter(x => x[0].startsWith("SaveItem-"))
-    .map(x => ({
-      key: x[0],
-      savedAt: new Date(parseInt(x[0].substring("SaveItem-".length))),
-      tabs: x[1].items.map(tab => {
-        tab.deleted = tab.deleted || false;
-        return tab;
-      }),
-    }));
-  saveItems.sort((a, b) => b.savedAt - a.savedAt);
+  constructor() {
+    this.header = new Header();
+    this.header.$checkShowUndeletedTab.checked = this.showUndeletedTab;
+    this.header.$checkShowDeletedTab.checked = this.showDeletedTab;
+    this.saveItemContainer = new SaveItemContainer();
+    this.footer = new Footer();
+  }
 
-  app.startupMessage = "Rendering Saved Items...";
-  app.latestKey = res["latest-key"];
-
-
-  app.isStarting = false;
-  renderOne();
-  function renderOne() {
-    if (saveItems.length === 0) {
-      app.startupMessage = "Done.";
+  addGroups(tagGroups) {
+    if (tagGroups.length === 0) {
+      this.header.startupMessage = "Done.";
       return;
     }
-    app.saveItems.push(saveItems.shift());
-    setTimeout(renderOne);
+
+    // 全部のグループを一度に表示すると重いので、1つずつ表示する。
+    this.addGroup(tagGroups.shift());
+    setTimeout(() => this.addGroups(tagGroups));
   }
-});
+
+  addGroup(tagBroup) {
+    const $group = new MyTabGroupElement();
+    $group.setData(tagBroup);
+    this.saveItemContainer.$saveItemContainer.appendChild($group);
+    this.$tabGroups.push($group);
+    this.updateTotalCount();
+  }
+
+  setErrorText(text) {
+    this.footer.$labelErrorText.textContent = text;
+  }
+
+  setStartupMessage(message) {
+    this.header.$labelStartupMessage.textContent = message;
+  }
+
+  setStorageDataText(text) {
+    this.footer.$textStorageData.textContent = text;
+  }
+
+  finishStartup() {
+    this.header.$labelStartupMessage.style.display = "none";
+  }
+
+  updateTotalCount() {
+    let count = 0;
+    for (const group of this.$tabGroups) {
+      for (const $tab of group.tabs) {
+        if ($tab.canShow()) {
+          count++;
+        }
+      }
+    }
+    this.header.$labelTotalCount.textContent = count;
+  }
+
+  onFilterChanged() {
+    this.showUndeletedTab = this.header.$checkShowUndeletedTab.checked;
+    this.showDeletedTab = this.header.$checkShowDeletedTab.checked;
+    for (const group of this.$tabGroups) {
+      group.refresh();
+    }
+    this.updateTotalCount();
+  }
+}
+
+
+class SavedGroup {
+  constructor([key, {items}]) {
+    this.key = key;
+    this.savedAt = new Date(parseInt(key.substring("SaveItem-".length))),
+    this.tabs = items.map(tab => {
+      tab.deleted = tab.deleted || false;
+      return tab;
+    });
+  }
+}
+
+
+class ExtensionCore {
+  latestKey = null;
+
+  async start() {
+    // 保存されたデータを取得する。
+    const res = await chrome.storage.local.get();
+
+    // データを取得したら、保存されたデータを表示する。
+    view.setStartupMessage("Parsing Storage Data...");
+    view.setStorageDataText(JSON.stringify(res));
+    this.latestKey = res["latest-key"];
+
+    // 表示用のデータに変換する。
+    const saveItems = Object.entries(res)
+      .filter(x => x[0].startsWith("SaveItem-"))
+      .map(x => new SavedGroup(x));
+    saveItems.sort((a, b) => b.savedAt - a.savedAt);
+    
+    view.setStartupMessage("Rendering Saved Items...");
+    view.addGroups(saveItems);
+    view.finishStartup();
+  }
+}
+
+
+window.view = new MainView();
+window.core = new ExtensionCore();
+core.start();
+
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log("received: ", request, sender);
@@ -286,4 +459,79 @@ function copyTextToClipboard(text) {
   document.execCommand('copy');
   copyFrom.blur();
   document.body.removeChild(copyFrom);
+  // 念のため、コンソールにも出力する。
+  console.log(text);
+}
+
+
+
+async function importTabs(importText) {
+  if (importText == null || importText.match(/^ *$/) != null) {
+    view.setErrorText("入力が空です。");
+    return;
+  }
+  view.setErrorText("");
+
+  var tmpError = null;
+  // まずJSONとして処理する。
+  try {
+    var items = JSON.parse(importText);
+    // tab[][]の場合と、tab[]の場合があるのでtab[]の場合はtab[][]にする。
+    if (items[0][0] == null) {
+      items = [items];
+    }
+
+    var time = Date.now();
+    var saveItems = items.map((item, i) => ({key: "SaveItem-" + (time - i), items: item}));
+    var data = {};
+    saveItems.forEach(item => {
+      data[item.key] = item;
+    });
+    data["latest-key"] = saveItems[0].key;
+    await chrome.storage.local.set(data)
+    window.location.reload();
+    return;
+  } catch (error) {
+    tmpError = error;
+  }
+
+  // だめならテキスト形式で処理する。
+  try {
+    var items = importText.split("\n");
+    var groups = items.reduce((acc, line) => {
+      // 空行が来たら次のグループを作る。
+      if (line === "") {
+        acc[acc.length] = [];
+      }
+        // 普通の行なら末尾のグループに追加する。
+      else {
+        acc[acc.length - 1].push(line);
+      }
+      return acc;
+    }, [[]]).filter(group => group.length !== 0);
+
+    var time = Date.now();
+    var saveItems = groups.map((lines, i) => {
+      var items = lines.map(line => {
+        var [url, ...rest] = line.split(" | ");
+        var title = rest.join(" | ");
+        if (title === "") title = url;
+        return {title, url}
+      });
+      console.log(items);
+      return {key: "SaveItem-" + (time - i), items};
+    });
+
+    var data = {};
+    saveItems.forEach(item => {
+      data[item.key] = item;
+    });
+    data["latest-key"] = saveItems[0].key;
+    await chrome.storage.local.set(data);
+    window.location.reload();
+    return;
+  }
+  catch (error) {
+    view.setErrorText(error.stack + "\n\n\n" + tmpError.stack);
+  }
 }

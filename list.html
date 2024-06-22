@@ -4,87 +4,97 @@
     <meta charset="utf-8"/>
     <title>Saved Tabs</title>
     <style type="text/css">
-    .ItemContainer {
-      margin-top: 2em;
-      border-top: 1px solid #aaa;
-    }
-    .ItemTitle {
-      display: inline-block;
-    }
-    h2 {
-      display: inline-block;
-    }
-    ol {
-      margin: 0;
-      padding-left: 1em;
-    }
-    textarea {
-      display: block;
-      width: 40em;
-      height: 15em;
-    }
+      h2 {
+        display: inline-block;
+      }
+      textarea {
+        display: block;
+        width: 40em;
+        height: 15em;
+      }
     </style>
   </head>
 
   <body>
-    <div id="app">
-      <div>
-        <h2>🔖 Saved Tabs ({{totalCount}})</h2>
-        <label>
-          <input type="checkbox" v-model="showUndeletedTab">
-          Undeleted tab
-        </label>
-        <label>
-          <input type="checkbox" v-model="showDeletedTab">
-          Deleted tab
-        </label>
-        <button @click="onClickClearDeletedTab">Clear deleted tabs</button>
-      </div>
+    <!-- ヘッダー -->
+    <div>
+      <h2>🔖 Saved Tabs (<span id="labelTotalCount"></span>)</h2>
+      <label>
+        <input type="checkbox" id="checkShowUndeletedTab">
+        Undeleted tab
+      </label>
+      <label>
+        <input type="checkbox" id="checkShowDeletedTab">
+        Deleted tab
+      </label>
+      <button id="buttonClearDeletedTab">Clear deleted tabs</button>
+    </div>
+    <p id="labelStartupMessage"></p>
 
-
-      <p v-if="isStarting">{{startupMessage}}</p>
-      <div v-else v-for="saveItem in saveItems"
-          v-show="canShowGroup(saveItem)"
-          class="ItemContainer">
-        <h3 class="ItemTitle">Saved at {{saveItem.savedAt.toLocaleString()}} ({{countTabsOfGroup(saveItem)}})</h3>
-        <button @click="onClickOpenAll(saveItem, $event)">✔ Open All</button>
-        <button @click="onClickDeleteAll(saveItem, $event)">❌ Delete All</button>
-
-        <button @click="onClickCopyAsText(saveItem, $event)">📋 Text</button>
-        <button @click="onClickCopyAsJson(saveItem, $event)">📋 JSON</button>
-        <ol>
-          <li
-            v-for="tab in saveItem.tabs"
-            v-show="canShowTab(tab)">
-            <app-saved-tab
-              :group="saveItem"
-              :tab="tab"
-              @click-link="onClickLink"
-              @click-delete="onClickDelete"
-              ></app-saved-tab>
-          </li>
-        </ol>
-      </div>
+    <!-- タブ一覧 -->
+    <div id="saveItemContainer"></div>
     
-      <div style="background: #eee; padding: 1em; margin-top: 1em;">
-        <div>
-            <h2>⚙️ Other</h2>
-        </div>
-        <button @click="onClickCopyAllAsText($event)">📋 Copy all as text</button>
-        <button @click="onClickCopyAllAsJson($event)">📋 Copy all as JSON</button>
-        <pre v-text="errorText"></pre>
-        <div>
-          <h3>Import</h3>
-          <button @click="onClickImport($event)">Import</button>
-          <textarea v-model="importText"></textarea>
-        </div>
-        <div>
-          <h3>Storage Data</h3>
-          <textarea v-model="storageData"></textarea>
-        </div>
+    <!-- グループ用テンプレート -->
+    <template id="templateTabGroup">
+      <style>
+        .ItemContainer {
+          margin-top: 2em;
+          border-top: 1px solid #aaa;
+        }
+        .ItemTitle {
+          display: inline-block;
+        }
+        ol {
+          margin: 0;
+          padding-left: 1em;
+        }
+      </style>
+      <div class="ItemContainer">
+        <h3 class="ItemTitle">
+          Saved at
+          <span class="labelSavedAt"></span>
+          (<span class="labelTabCount"></span>)
+        </h3>
+
+        <button class="buttonOpenAll">✔ Open All</button>
+        <button class="buttonDeleteAll">❌ Delete All</button>
+        <button class="buttonCopyAsText">📋 Text</button>
+        <button class="buttonCopyAsJson">📋 JSON</button>
+
+        <ol class="listTabs"></ol>
+      </div>
+    </template>
+
+    <!-- タブ用テンプレート -->
+    <template id="templateTab">
+      <li>
+        <button class="buttonDeleteTab">❌</button>
+        <a class="linkTab"target="_blank">
+          <img class="imgFavicon" style="width: 16px; height: 16px;">
+          <span class="labelTabTitle"></span>
+        </a>
+      </li>
+    </template>
+
+    <!-- フッター -->
+    <div style="background: #eee; padding: 1em; margin-top: 1em;">
+      <div>
+          <h2>⚙️ Other</h2>
+      </div>
+      <button id="buttonCopyAllAsText">📋 Copy all as text</button>
+      <button id="buttonCopyAllAsJson">📋 Copy all as JSON</button>
+      <pre id="labelErrorText"></pre>
+      <div>
+        <h3>Import</h3>
+        <button id="buttonImport">Import</button>
+        <textarea id="textImportText" style="white-space: nowrap;" ></textarea>
+      </div>
+      <div>
+        <h3>Loaded Storage Data</h3>
+        <textarea id="textStorageData"></textarea>
       </div>
     </div>
+
   </body>
-  <script src="vue.2.6.10.js"></script>
   <script src="list.js"></script>
 </html>
